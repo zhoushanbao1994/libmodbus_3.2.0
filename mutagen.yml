@@ -1,0 +1,28 @@
+sync:
+  libmodbus-code:
+    alpha: /Users/zhoushanbao/Code/libmodbus_3.2.0
+    beta: root@192.168.9.60:/root/mbp_sync/libmodbus_3.2.0
+    mode: one-way-replica
+    flushOnCreate: true
+    ignore:
+      vcs: true
+      paths:
+        - /artifacts
+        - /.build-logs
+        - /mutagen.yml.lock
+        - .DS_Store
+        - '*.o'
+        - '*.lo'
+        - '*.la'
+        - .libs
+        - .deps
+        - /autom4te.cache
+  libmodbus-results:
+    alpha: root@192.168.9.60:/root/mbp_results/libmodbus_3.2.0
+    beta: /Users/zhoushanbao/Code/libmodbus_3.2.0/artifacts
+    mode: one-way-replica
+    flushOnCreate: true
+    ignore:
+      vcs: true
+      paths:
+        - .DS_Store

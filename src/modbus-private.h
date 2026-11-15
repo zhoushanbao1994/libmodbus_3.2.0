@@ -106,6 +106,17 @@ struct _modbus {
     struct timeval indication_timeout;
     const modbus_backend_t *backend;
     void *backend_data;
+    /* 完整 ADU 回调属于当前实例，不使用全局回调，避免多连接相互覆盖。
+     * NULL 表示关闭；收发公共路径在合适时机同步调用它。 */
+    modbus_frame_callback_t frame_callback;
+    /* 应用提供的上下文，仅保存指针，不复制、不释放其指向的对象。
+     * 注册和通讯须由应用串行调度，确保回调期间该对象始终有效。
+     * 注销回调时同时将此字段清空，独立开关暂停时保留它。 */
+    void *frame_user_data;
+    /* 当前实例的回调通知开关，TRUE 为允许通知，FALSE 为暂停通知。
+     * 默认 TRUE；通知还须存在有效的 frame_callback。
+     * 只控制回调输出，不清除注册信息，不影响底层收发或 debug。 */
+    int frame_callback_enabled;
 };
 
 void _modbus_init_common(modbus_t *ctx);

@@ -126,6 +126,11 @@ In RTU, you should define the slave ID of your client with
 To analyse the exchanged data, you can enable the debug mode with
 [modbus_set_debug](modbus_set_debug.md).
 
+To capture complete raw TX/RX frames separately for each context, register a
+callback with [modbus_set_frame_callback](modbus_set_frame_callback.md).
+Pause or resume callback output while retaining its registration with
+[modbus_set_frame_callback_enabled](modbus_set_frame_callback_enabled.md).
+
 Once you have completed the communication or at the end of your program, you
 should free the resources with the common function, [modbus_free](modbus_free.md)
 

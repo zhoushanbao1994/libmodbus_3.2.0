@@ -64,7 +64,11 @@ os_win32="false"
 os_cygwin="false"
 os_qnx="false"
 os_sunos="false"
+os_linux="false"
 case "${host_os}" in
+      linux*)
+    os_linux="true"
+  ;;
       *mingw32*)
     os_win32="true"
   ;;
@@ -80,6 +84,7 @@ case "${host_os}" in
 esac
 AM_CONDITIONAL(OS_WIN32, test "$os_win32" = "true")
 AM_CONDITIONAL(OS_QNX, test "$os_qnx" = "true")
+AM_CONDITIONAL(OS_LINUX, test "$os_linux" = "true")
 
 m4_pattern_forbid([^LT_INIT])dnl
 LT_INIT([disable-static win32-dll pic-only])

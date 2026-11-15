@@ -165,6 +165,31 @@ static unsigned int compute_response_length_from_request(modbus_t *ctx, uint8_t 
     return offset + length + ctx->backend->checksum_length;
 }
 
+/* 统一的完整报文通知入口，供 TX/RX 路径复用。
+ * 仅借用已有报文缓冲区，不分配内存、不复制数据，也不接管用户上下文。
+ * 回调在当前通讯线程中同步执行，应用需要异步处理时必须自行复制数据。 */
+static void _modbus_emit_frame(modbus_t *ctx,
+                               modbus_frame_direction_t direction,
+                               const uint8_t *data,
+                               int length)
+{
+    int saved_errno;
+
+    /* 未注册回调或独立开关处于暂停状态时直接返回。
+     * TX/RX 共用此判断，暂停时仍保留函数及用户上下文供恢复使用，
+     * 不影响已完成的发送、接收及校验，也不缓存或补发暂停期间的报文。
+     * 同时避免将无效指针或空报文交给应用。 */
+    if (ctx == NULL || !ctx->frame_callback_enabled || ctx->frame_callback == NULL ||
+        data == NULL || length <= 0)
+        return;
+
+    /* 日志回调可能执行文件或网络操作并改变 errno。
+     * 保存并恢复入口错误码，尤其不能覆盖 RX 完整性检查产生的错误。 */
+    saved_errno = errno;
+    ctx->frame_callback(ctx, direction, data, length, ctx->frame_user_data);
+    errno = saved_errno;
+}
+
 /* Sends a request/response */
 static int send_msg(modbus_t *ctx, uint8_t *msg, int msg_length)
 {
@@ -183,6 +208,13 @@ static int send_msg(modbus_t *ctx, uint8_t *msg, int msg_length)
        successful! Disabled by default. */
     do {
         rc = ctx->backend->send(ctx, msg, msg_length);
+        /* send_msg_pre() 已补齐 RTU CRC 或更新 TCP MBAP 长度。
+         * 仅在底层报告整帧发送成功后通知 TX；失败、零字节和短写均不通知。
+         * 保留后续原有错误恢复及重试逻辑，重试成功时在此通知一次。
+         * 此事件表示数据已交给传输接口，不保证对端实际收到。 */
+        if (rc == msg_length)
+            _modbus_emit_frame(ctx, MODBUS_FRAME_TX, msg, msg_length);
+
         if (rc == -1) {
             _error_print(ctx, NULL);
             if (ctx->error_recovery & MODBUS_ERROR_RECOVERY_LINK) {
@@ -543,7 +575,16 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
     if (ctx->debug)
         printf("\n");
 
-    return ctx->backend->check_integrity(ctx, msg, msg_length);
+    /* 到达此处，分阶段接收流程已按当前帧长规则组装出一条完整报文。
+     * 完整性检查只执行一次，保留其返回值：有效长度、过滤后的 0 或错误 -1。
+     * 接收中途的超时、断线、超长等错误已在前面返回，不触发完整 RX。 */
+    rc = ctx->backend->check_integrity(ctx, msg, msg_length);
+    /* 使用实际组帧长度，而非完整性检查的返回值，使 CRC 错误帧和被过滤的
+     * 从站报文也能交给调试界面。通知入口会保护完整性检查设置的 errno。
+     * 后续事务 ID、异常响应及业务数据检查仍可能使上层事务失败，
+     * 因此 RX 通知本身不表示本次请求成功。 */
+    _modbus_emit_frame(ctx, MODBUS_FRAME_RX, msg, msg_length);
+    return rc;
 }
 
 /* Receive the request from a modbus master */
@@ -1994,6 +2035,14 @@ void _modbus_init_common(modbus_t *ctx)
 
     ctx->indication_timeout.tv_sec = 0;
     ctx->indication_timeout.tv_usec = 0;
+
+    /* RTU、TCP、TCP PI 构造函数均经过此公共初始化入口。
+     * 默认关闭回调并清空用户指针，防止新实例调用未初始化的函数地址。 */
+    ctx->frame_callback = NULL;
+    ctx->frame_user_data = NULL;
+    /* 默认允许已注册回调输出，兼容原有注册后立即生效的行为。
+     * 此时函数指针仍为 NULL，因此新实例本身不会产生回调。 */
+    ctx->frame_callback_enabled = TRUE;
 }
 
 /* Define the slave number */
@@ -2197,6 +2246,40 @@ int modbus_set_debug(modbus_t *ctx, int flag)
     }
 
     ctx->debug = flag;
+    return 0;
+}
+
+/* 为单个实例注册、替换或关闭报文回调，不改变连接状态及 debug 设置。
+ * 本接口不加锁；调用方必须与该实例的通讯操作串行执行。 */
+int modbus_set_frame_callback(modbus_t *ctx,
+                              modbus_frame_callback_t callback,
+                              void *user_data)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* 只保存应用提供的函数和上下文指针，实例之间互不影响。
+     * callback 为 NULL 表示注销，同时清除旧上下文，避免保留失效指针。
+     * 库不拥有 user_data，替换或注销后由应用负责安全释放旧对象。
+     * 不修改独立开关，使暂停期间注册或替换回调也不会意外恢复输出。 */
+    ctx->frame_callback = callback;
+    ctx->frame_user_data = callback ? user_data : NULL;
+    return 0;
+}
+
+/* 单独控制报文通知，保留已注册的回调及其上下文以便恢复。
+ * 与注册接口一样不加锁，必须由应用与同一实例的通讯操作串行调用。 */
+int modbus_set_frame_callback_enabled(modbus_t *ctx, int enabled)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* 归一化为 TRUE/FALSE；除当前实例开关外，不修改其他通讯状态。 */
+    ctx->frame_callback_enabled = enabled ? TRUE : FALSE;
     return 0;
 }
 

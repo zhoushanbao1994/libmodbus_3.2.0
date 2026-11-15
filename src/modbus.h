@@ -156,6 +156,73 @@ extern const unsigned int libmodbus_version_micro;
 
 typedef struct _modbus modbus_t;
 
+/* 完整 Modbus ADU 报文的传输方向；与请求/响应角色无关，主站和从站均适用。 */
+typedef enum {
+    /* 底层传输接口已接受整条发送报文，不代表对端已经收到或处理成功。 */
+    MODBUS_FRAME_TX = 0,
+    /* 已按库的帧长规则收齐报文；即使完整性检查失败，也可产生此事件。 */
+    MODBUS_FRAME_RX = 1
+} modbus_frame_direction_t;
+
+/*
+ * 完整原始报文回调，在执行通讯操作的线程中同步调用。
+ *
+ * ctx       当前通讯实例，可用于区分多个串口或 TCP 连接。
+ * direction 报文方向：MODBUS_FRAME_TX 或 MODBUS_FRAME_RX。
+ * data      只读的完整 ADU 数据，RTU 包含 CRC，TCP 包含 MBAP 头。
+ * length    data 的实际字节数，不是寄存器数量，也不是接收 API 的返回值。
+ * user_data 注册时传入的应用上下文，由应用负责其生命周期，允许为 NULL。
+ *
+ * data 指向库或调用方持有的临时缓冲区，仅在本次回调执行期间有效。
+ * 异步日志、Qt 界面或网络分发应先复制数据再入队；回调应尽快返回，
+ * 避免阻塞通讯线程。不得通过强制类型转换修改 data，也不得在回调内
+ * 释放 ctx，或对同一 ctx 重入执行读写等通讯操作。
+ *
+ * RX 表示收齐一帧，不保证 CRC、从站地址、事务 ID 或业务响应合法。
+ * 接收中途超时、断线等导致的未完整报文不会触发 RX。
+ * 库会恢复回调前的 errno，避免日志操作覆盖通讯错误码。
+ * C++ 回调必须自行捕获异常，不能让异常穿过 C 接口边界。
+ */
+typedef void (*modbus_frame_callback_t)(modbus_t *ctx,
+                                        modbus_frame_direction_t direction,
+                                        const uint8_t *data,
+                                        int length,
+                                        void *user_data);
+
+/*
+ * 注册或替换 ctx 的报文回调。每个实例只保存一组 callback/user_data，
+ * 新建实例默认关闭；不同实例可共享同一函数，并使用不同的用户上下文。
+ * 如需将同一报文交给多个订阅者，应由应用在该回调中进行分发。
+ *
+ * callback 为 NULL 时关闭回调，并清除已保存的 user_data；此时传入的
+ * user_data 会被忽略。此接口不改变 modbus_set_debug() 的设置。
+ * 注册、替换或注销均不改变独立的回调开关状态；暂停期间注册不会恢复输出。
+ *
+ * 同一 ctx 的注册、替换、注销必须与通讯操作串行执行，接口内部不加锁。
+ * 替换或注销前，须保证原回调执行结束，再释放其用户上下文。
+ * 同一实例仍不支持多线程并发执行通讯事务。
+ *
+ * 返回值：成功为 0；ctx 为 NULL 时返回 -1，并设置 errno = EINVAL。
+ */
+MODBUS_API int modbus_set_frame_callback(modbus_t *ctx,
+                                         modbus_frame_callback_t callback,
+                                         void *user_data);
+
+/*
+ * 暂停或恢复当前实例的 TX/RX 报文回调：enabled 为 0 时关闭，非零时开启。
+ * 默认开关为开启，以保持注册回调后立即生效的用法；未注册回调仍不输出。
+ *
+ * 关闭只阻止后续的报文回调，不清除函数指针及 user_data，也不影响实际
+ * Modbus 收发、错误处理或连接状态。重新开启即可继续使用原注册信息。
+ * 暂停期间的报文不会缓存或补发；应用已入队的日志由应用自行管理。
+ * 暂停不等于注销，仍须保持用户上下文有效，或先注销再释放它。
+ *
+ * 本开关仅控制报文回调；标准调试输出由 modbus_set_debug() 独立控制。
+ * 每个实例的开关相互独立，调用须与该实例的通讯操作串行执行。
+ * 返回值：成功为 0；ctx 为 NULL 时返回 -1，并设置 errno = EINVAL。
+ */
+MODBUS_API int modbus_set_frame_callback_enabled(modbus_t *ctx, int enabled);
+
 /*! Memory layout in tab_xxx arrays is processor-endianness.
     When receiving modbus data, it is converted to processor-endianness,
     see read_registers().

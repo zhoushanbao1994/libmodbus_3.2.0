@@ -5,6 +5,7 @@ AM_MAKEFLAGS = --no-print-directory
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libmodbus.pc
 EXTRA_DIST = libmodbus.pc.in
+EXTRA_DIST += scripts/run-frame-callback-test.sh
 CLEANFILES += libmodbus.pc
 
 dist_doc_DATA = AUTHORS NEWS.md README.md
